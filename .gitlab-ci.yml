@@ -1,0 +1,136 @@
+stages:
+  - cleanup
+  - checkout
+  - build
+  - test
+  - sonar
+  - docker
+  - push
+  - deploy
+  - uat
+  - notify
+
+variables:
+  M2_HOME: "/opt/tools/apache-maven-3.9.0"
+  #JAVA_HOME: "/opt/tools/jdk-17.0.5"
+  SONAR_SCANNER_HOME: "/opt/tools/sonar-scanner"
+  SONARQUBE_URL: "https://gbssonar.edst.ibm.com/sonar"
+  SONARQUBE_TOKEN: "sqp_e98acda9ee903e163cca0e85fb77634752fcf83c"
+  ARTIFACTORY_URL: "gbsartifactory.edst.ibm.com"
+  ARTIFACTORY_REPO: "internet-banking"
+  OC_PROJECT: "fundtransfer-demo"
+  OC_URL: "https://c115-e.us-south.containers.cloud.ibm.com:32198"
+
+cleanup:
+  stage: cleanup
+  tags: [dockerio-4]
+  script:
+    - rm -rf *
+    - echo "Workspace cleaned"
+
+checkout:
+  stage: checkout
+  tags: [dockerio-4]
+  script:
+    #- git clone https://Sai.kavya.Thayi:4Koh-BCJeHjwMr88Tynb@gbsgit.edst.ibm.com/Admin-ProjLib/liberty-demo-pet-clinic/liberty-demo.git .
+    - git checkout main
+  only:
+    - main
+
+build:
+  stage: build
+  tags: [dockerio-4]
+  script:
+    - export PATH=$JAVA_HOME/bin:$M2_HOME/bin:$PATH
+    - java -version
+    - mvn clean
+    - mvn spring-javaformat:apply
+    - mvn package -DskipTests
+
+test:
+  stage: test
+  tags: [dockerio-4]
+  script:
+    - export PATH=$JAVA_HOME/bin:$M2_HOME/bin:$PATH
+    - mvn test verify jacoco:report
+  artifacts:
+    paths:
+      - target/site/jacoco/jacoco.xml
+      - target/surefire-reports/
+    reports:
+      junit: target/surefire-reports/*.xml
+
+sonar:
+  stage: sonar
+  tags: [dockerio-4]
+  script:
+    - export PATH=$SONAR_SCANNER_HOME/bin:$PATH
+    - sonar-scanner \
+        -Dsonar.host.url=$SONARQUBE_URL \
+        -Dsonar.login=$SONARQUBE_TOKEN \
+        -Dsonar.projectKey=Spring-Petclinic \
+        -Dsonar.projectName=Spring-Petclinic \
+        -Dsonar.projectVersion=$CI_PIPELINE_ID \
+        -Dsonar.sources=. \
+        -Dsonar.java.binaries=target/classes \
+        -Dsonar.junit.reportsPath=target/surefire-reports \
+        -Dsonar.surefire.reportsPath=target/surefire-reports \
+        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+        -Dsonar.verbose=true \
+        -Dsonar.exclusions=**/**/dummy.xml
+
+docker-build:
+  stage: docker
+  tags: [dockerio-4]
+  script:
+    - docker build -f Dockerfile -t $ARTIFACTORY_URL/$ARTIFACTORY_REPO/pet-clinic-latest:$CI_PIPELINE_ID .
+
+docker-push:
+  stage: push
+  tags: [dockerio-4]
+  script:
+    - echo $ARTIFACTORY_PASSWORD | docker login $ARTIFACTORY_URL -u $ARTIFACTORY_USERNAME --password-stdin
+    - docker push $ARTIFACTORY_URL/$ARTIFACTORY_REPO/pet-clinic-latest:$CI_PIPELINE_ID
+
+ucd-deploy:
+  stage: deploy
+  tags: [dockerio-4]
+  script:
+    - echo "Deploying to UCD..."
+    - >
+      curl -X POST -u "sai.kavya.thayi@ibm.com:Saikavyathayi@1916"
+      -H "Content-Type: application/json"
+      -d "{\"application\":\"petclinic-app\",\"environment\":\"DEV\",\"process\":\"deploy petclinic-app\",\"versions\":[\"petclinic:$CI_PIPELINE_ID\"]}"
+      https://your-ucd-server:8443/cli/applicationProcessRequest/request
+
+
+uat-test:
+  stage: uat
+  tags: [dockerio-4]
+  script:
+    - export PATH=$JAVA_HOME/bin:$M2_HOME/bin:$PATH
+    - chromedriver --version
+    - mvn spring-javaformat:apply
+    - mvn -Dtest=LibertyDemoSelenium test
+    - mvn surefire-report:report-only
+  artifacts:
+    reports:
+      junit: target/surefire-reports/*.xml
+
+notify:
+  stage: notify
+  tags: [dockerio-4]
+  script:
+    # Slack notification
+    - >
+      curl -X POST -H 'Content-type: application/json'
+      --data "{\"text\":\":rocket: Job $CI_JOB_NAME in pipeline $CI_PIPELINE_ID finished with status $CI_JOB_STATUS\"}"
+      $SLACK_WEBHOOK_URL
+    # Jira notification
+    - >
+      curl -u $JIRA_USERNAME:$JIRA_PASSWORD
+      -X POST
+      --data "{\"body\":\"GitLab Build Number: $CI_PIPELINE_ID , Build Status: $CI_JOB_STATUS\"}"
+      -H 'Content-Type: application/json'
+      https://gbsjira.edst.ibm.com/rest/api/2/issue/LST-574/comment
+

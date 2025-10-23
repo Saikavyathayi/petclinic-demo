@@ -1,0 +1,24 @@
+{{- if .Values.persistentVolume.enabled }}
+{{- if not .Values.persistentVolume.existingClaim -}}
+{{- if eq .Values.persistentVolume.storageClassName "" -}}
+{{- if not .Values.upgrade -}}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  {{- if .Values.persistentVolume.annotations }}
+  annotations:
+{{ toYaml .Values.persistentVolume.annotations | indent 4 }}
+  {{- end }}
+  name: {{ include "pet-clinic.fullname" .}}-pv
+spec:
+  accessModes:
+  - {{ toYaml .Values.persistentVolume.accessModes }}
+  storageClassName: "default"
+  capacity:
+    storage: "{{ .Values.persistentVolume.size }}"
+  hostPath:
+    path: "{{ .Values.persistentVolume.hostPath }}/{{ include "pet-clinic.fullname" .}}"
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
