@@ -1,0 +1,111 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - dev
+
+env:
+  JAVA_HOME: /opt/tools/jdk-17.0.5
+  M2_HOME: /opt/tools/apache-maven-3.9.0
+  SONARQUBE_URL: https://gbssonar.edst.ibm.com/sonar
+  ARTIFACTORY_URL: gbsartifactory.edst.ibm.com
+  ARTIFACTORY_REPO: internet-banking
+  GIT_URL: https://gbsgit.edst.ibm.com/Admin-ProjLib/liberty-demo-pet-clinic/liberty-demo.git
+  OC_PROJECT: fundtransfer-demo
+  OC_URL: https://c115-e.us-south.containers.cloud.ibm.com:32198
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build project
+        run: |
+          echo "Building project..."
+          mvn clean spring-javaformat:apply package -DskipTests
+
+      - name: Run unit and integration tests
+        run: |
+          echo "Running tests..."
+          mvn test verify jacoco:report
+
+      - name: Upload Jacoco coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: jacoco-report
+          path: target/jacoco.exec
+
+      - name: SonarQube Analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+        run: |
+          ${M2_HOME}/bin/mvn sonar:sonar \
+            -Dsonar.host.url=${SONARQUBE_URL} \
+            -Dsonar.login=${SONAR_TOKEN} \
+            -Dsonar.projectKey=Spring-Petclinic \
+            -Dsonar.projectName=Spring-Petclinic \
+            -Dsonar.projectVersion=${{ github.run_number }} \
+            -Dsonar.sources=. \
+            -Dsonar.java.binaries=target/classes \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -Dsonar.junit.reportsPath=target/surefire-reports
+
+      - name: Docker Build
+        run: |
+          docker build -f Dockerfile -t ${ARTIFACTORY_URL}/${ARTIFACTORY_REPO}/pet-clinic-latest:${{ github.run_number }} .
+
+      - name: Docker Login & Push
+        env:
+          DOCKER_USERNAME: ${{ secrets.ARTIFACTORY_USER }}
+          DOCKER_PASSWORD: ${{ secrets.ARTIFACTORY_PASSWORD }}
+        run: |
+          echo $DOCKER_PASSWORD | docker login ${ARTIFACTORY_URL} -u $DOCKER_USERNAME --password-stdin
+          docker push ${ARTIFACTORY_URL}/${ARTIFACTORY_REPO}/pet-clinic-latest:${{ github.run_number }}
+
+      - name: UCD Deploy
+        env:
+          UCD_USER: ${{ secrets.UCD_USER }}
+          UCD_PASSWORD: ${{ secrets.UCD_PASSWORD }}
+        run: |
+          echo "Triggering UCD deployment..."
+          # Example: curl to UCD API or run UCD CLI
+          # curl -u $UCD_USER:$UCD_PASSWORD -X POST ...
+
+      - name: Selenium UAT Test
+        run: |
+          mvn -Dtest=LibertyDemoSelenium test
+          mvn surefire-report:report-only
+
+      - name: Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          channel-id: 'slack-notify2'
+          slack-token: ${{ secrets.SLACK_TOKEN }}
+          text: "Build #${{ github.run_number }} completed with status ${{ job.status }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Jira Comment
+        if: always()
+        env:
+          JIRA_USER: ${{ secrets.JIRA_USER }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+        run: |
+          curl -u $JIRA_USER:$JIRA_TOKEN \
+               -X POST \
+               --data "{\"body\":\"GitHub Actions Build #${{ github.run_number }}, Status: ${{ job.status }}\"}" \
+               -H "Content-Type: application/json" \
+               https://gbsjira.edst.ibm.com/rest/api/2/issue/LST-574/comment
